@@ -3,6 +3,7 @@ import os
 # Important: make sure pygame is NOT headless
 os.environ.pop("SDL_VIDEODRIVER", None)
 
+import argparse
 import random
 
 import numpy as np
@@ -49,7 +50,7 @@ config = {
         "world_dim": (4.0, 5.0),
         "dt": 0.05,
         "num_envs": 1,
-        "device": "cpu",
+        "device": "cuda",
         "n_agents": num_agents,
         "agent_formation": agent_formation,
         "placement_keepout_border": 1.0,
@@ -69,39 +70,79 @@ config = {
     },
 }
 
-random.seed(config["seed"])
-np.random.seed(config["seed"])
-torch.manual_seed(config["seed"])
 
-device = "cpu"
+def run_episode(env, agent, device, render):
+    obs = env.vector_reset()
+    total_reward = 0.0
+    done = False
+    steps = 0
+    clock = pygame.time.Clock() if render else None
 
-env = PassageEnv(config["env_config"])
-agent = Agent(env, config).to(device)
+    while not done and steps < env.cfg["max_time_steps"]:
+        if render:
+            for event in pygame.event.get():
+                if event.type == pygame.QUIT:
+                    env.close()
+                    raise SystemExit
 
-weights_path = "weights/real-line2/weights_epoch1.pt"  # change epoch here
-agent.load_state_dict(torch.load(weights_path, map_location=device))
-agent.eval()
+        with torch.no_grad():
+            x = agent.format_input(obs, device)
+            action, _, _, _ = agent.get_action_and_value(x)
 
-obs = env.vector_reset()
-clock = pygame.time.Clock()
+        obs, reward, dones, _ = env.vector_step(action.cpu().numpy())
+        total_reward += float(reward[0])
+        done = bool(dones[0])
+        steps += 1
 
-for step in range(env.cfg["max_time_steps"]):
-    for event in pygame.event.get():
-        if event.type == pygame.QUIT:
-            env.close()
-            raise SystemExit
+        if render:
+            env.render_ours(mode="human")
+            clock.tick(int(1 / env.cfg["dt"]))
 
-    with torch.no_grad():
-        x = agent.format_input(obs, device)
-        action, _, _, _ = agent.get_action_and_value(x)
+    return total_reward, steps, done
 
-    obs, reward, done, info = env.vector_step(action.cpu().numpy())
 
-    env.render_ours(mode="human")
-    clock.tick(int(1 / env.cfg["dt"]))
+def main():
+    parser = argparse.ArgumentParser(description="Evaluate AFOR policy checkpoints")
+    parser.add_argument("--weights", default="weights/real-line2/weights_epoch1.pt", help="Checkpoint path")
+    parser.add_argument("--episodes", type=int, default=10, help="Number of evaluation episodes")
+    parser.add_argument("--render", action="store_true", help="Render with pygame")
+    args = parser.parse_args()
 
-    if done[0]:
-        print("done at step:", step)
-        break
+    random.seed(config["seed"])
+    np.random.seed(config["seed"])
+    torch.manual_seed(config["seed"])
 
-env.close()
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    config["env_config"]["device"] = device
+    config["env_config"]["render"] = bool(args.render)
+
+    env = PassageEnv(config["env_config"])
+    agent = Agent(env, config).to(device)
+
+    agent.load_state_dict(torch.load(args.weights, map_location=device))
+    agent.eval()
+
+    rewards = []
+    lengths = []
+    successes = 0
+
+    for ep in range(args.episodes):
+        ep_reward, ep_steps, done = run_episode(env, agent, device, args.render)
+        rewards.append(ep_reward)
+        lengths.append(ep_steps)
+        successes += int(done)
+        print(f"episode {ep+1}/{args.episodes}: reward={ep_reward:.3f}, steps={ep_steps}, done={done}")
+
+    print("\n=== Evaluation Summary ===")
+    print(f"device: {device}")
+    print(f"weights: {args.weights}")
+    print(f"episodes: {args.episodes}")
+    print(f"success_rate: {successes / max(1, args.episodes):.3f}")
+    print(f"mean_reward: {np.mean(rewards):.3f} +/- {np.std(rewards):.3f}")
+    print(f"mean_length: {np.mean(lengths):.2f} +/- {np.std(lengths):.2f}")
+
+    env.close()
+
+
+if __name__ == "__main__":
+    main()

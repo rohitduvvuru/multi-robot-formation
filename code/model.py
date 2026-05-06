@@ -96,8 +96,8 @@ class Model(nn.Module):
         self.obs_space = obs_space
         self.action_space = action_space
 
-        self.n_agents = 5#obs_space["pos"].shape[0]
-        self.outputs_per_agent = 4#int(num_outputs / self.n_agents)
+        self.n_agents = obs_space["pos"].shape[0]
+        self.outputs_per_agent = int(num_outputs / self.n_agents)
 
         activation = {
             "relu": nn.ReLU,
@@ -143,6 +143,10 @@ class Agent(nn.Module):
                       **model_config)
 
         self.model = model
+
+
+    def set_comm_range(self, comm_range: float):
+        self.model.comm_range = torch.tensor([comm_range], device=self.model.comm_range.device)
 
     def format_input(self, x, device):
         # format from dict to tensor input

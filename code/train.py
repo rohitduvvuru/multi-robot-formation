@@ -63,7 +63,7 @@ config={
         "world_dim": (4.0, 5.0),
         "dt": 0.05,
         "num_envs": 32,
-        "device": "cpu",
+        "device": "cuda",
         "n_agents": num_agents,
         "agent_formation": agent_formation,
         "placement_keepout_border": 1.0,
@@ -90,7 +90,76 @@ config={
         "record_env": "videos",
         "render_env": True,
     },
+    "auto_teleop": {
+        "enabled": True,
+        "p_grab_start": 0.002,
+        "p_grab_end": 0.02,
+        "p_release": 0.01,
+        "drift_speed": 0.6,
+        "min_steps": 12,
+        "max_steps": 40,
+    },
+    "reward_framing": {
+        "maintenance_scale": 1.0,
+        "adapt_scale": 1.15,
+        "adapt_window": 20,
+    },
+    "comm_radius": {
+        "start": 3.0,
+        "end": 2.0,
+        "anneal_frac": 0.4,
+    },
 }
+
+
+def linear_schedule(start, end, frac):
+    frac = min(max(frac, 0.0), 1.0)
+    return start + (end - start) * frac
+
+def apply_auto_teleop(raw_actions, obs, teleop_state, cfg, progress):
+    if not cfg["enabled"]:
+        return raw_actions, np.zeros((raw_actions.shape[0],), dtype=bool), np.zeros((raw_actions.shape[0],), dtype=bool)
+
+    p_grab = linear_schedule(cfg["p_grab_start"], cfg["p_grab_end"], progress)
+    p_release = cfg["p_release"]
+    drift_speed = cfg["drift_speed"]
+
+    actions = raw_actions.copy()
+    active_mask = np.zeros((raw_actions.shape[0],), dtype=bool)
+    toggled_mask = np.zeros((raw_actions.shape[0],), dtype=bool)
+    for env_idx in range(raw_actions.shape[0]):
+        state = teleop_state[env_idx]
+        if state["active"] and np.random.rand() < p_release:
+            state["active"] = False
+            state["idx"] = -1
+            state["remaining"] = 0
+            toggled_mask[env_idx] = True
+        elif (not state["active"]) and np.random.rand() < p_grab:
+            state["active"] = True
+            state["idx"] = np.random.randint(raw_actions.shape[1])
+            state["remaining"] = np.random.randint(cfg["min_steps"], cfg["max_steps"] + 1)
+            state["direction"] = 1.0 if np.random.rand() < 0.5 else -1.0
+            toggled_mask[env_idx] = True
+
+        if state["active"]:
+            active_mask[env_idx] = True
+            idx = state["idx"]
+            centroid = np.mean(np.asarray(obs[env_idx]["pos"]), axis=0)
+            pos = np.asarray(obs[env_idx]["pos"])[idx]
+            lateral = np.array([1.0, 0.0])
+            to_center = centroid - pos
+            if np.linalg.norm(to_center) > 1e-6:
+                sign = np.sign(np.dot(np.array([to_center[0], 0.0]), lateral))
+                if sign != 0:
+                    state["direction"] = -sign
+            actions[env_idx, idx, :] = np.array([state["direction"] * drift_speed, 0.3 * drift_speed])
+            state["remaining"] -= 1
+            if state["remaining"] <= 0:
+                state["active"] = False
+                state["idx"] = -1
+                toggled_mask[env_idx] = True
+
+    return actions, active_mask, toggled_mask
 
 #%%
 random.seed(config['seed'])
@@ -100,9 +169,10 @@ torch.backends.cudnn.deterministic = True
 
 #%%
 os.environ["SDL_VIDEODRIVER"]='dummy'
-device = 'cpu'
+device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
 env_config = config['env_config']
+env_config['device'] = device
 env = PassageEnv(env_config)
 
 agent = Agent(env, config).to(device)
@@ -129,16 +199,24 @@ global_step = 0
 start_time = time.time()
 next_obs = env.vector_reset()
 next_done = torch.zeros(env.cfg['num_envs']).to(device)
+teleop_state = [dict(active=False, idx=-1, remaining=0, direction=1.0) for _ in range(env.cfg['num_envs'])]
+adapt_timers = np.zeros((env.cfg['num_envs'],), dtype=np.int32)
 
 num_iterations = config['train_batch_size']
 batch_size = env.cfg["max_time_steps"]
 minibatch_size = config['sgd_minibatch_size']
+assert batch_size >= minibatch_size, "sgd_minibatch_size should be <= max_time_steps"
 
 weights_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'weights', 'real-line2')
 os.makedirs(weights_dir, exist_ok=True)
 
 for iteration in range(1, num_iterations + 1):
     obs = list()
+    progress = iteration / max(1, num_iterations)
+    anneal_frac = config["comm_radius"]["anneal_frac"]
+    comm_progress = min(progress / anneal_frac, 1.0) if anneal_frac > 0 else 1.0
+    current_comm_radius = linear_schedule(config["comm_radius"]["start"], config["comm_radius"]["end"], comm_progress)
+    agent.set_comm_range(current_comm_radius)
     frames = []
 
     for step in range(0, env.cfg["max_time_steps"]):
@@ -149,10 +227,19 @@ for iteration in range(1, num_iterations + 1):
         with torch.no_grad():
             action, logprob, _, value = agent.get_action_and_value(agent.format_input(next_obs, device))
             values[step] = value
-        actions[step] = action
+
+        policy_actions_np = action.cpu().numpy()
+        stepped_actions, teleop_active, teleop_toggled = apply_auto_teleop(
+            policy_actions_np, next_obs, teleop_state, config["auto_teleop"], progress
+        )
+        adapt_timers[teleop_toggled] = config["reward_framing"]["adapt_window"]
+        adapt_mask = adapt_timers > 0
+        adapt_timers = np.maximum(adapt_timers - 1, 0)
+
+        actions[step] = torch.tensor(stepped_actions, dtype=action.dtype, device=device)
         logprobs[step] = logprob
 
-        next_obs, reward, done, infos = env.vector_step(action.cpu().numpy())
+        next_obs, reward, done, infos = env.vector_step(stepped_actions)
         next_done = np.array(done)
 
         returns = torch.zeros((env.cfg["num_envs"], env.cfg["n_agents"]))
@@ -160,6 +247,8 @@ for iteration in range(1, num_iterations + 1):
             info_instance = infos[idx]
             for key, agent_reward in info_instance["rewards"].items():
                 returns[idx, key] += agent_reward
+        framing_scale = np.where(adapt_mask, config["reward_framing"]["adapt_scale"], config["reward_framing"]["maintenance_scale"])
+        returns *= torch.tensor(framing_scale, dtype=returns.dtype, device=returns.device).unsqueeze(1)
         rewards[step] = returns.to(device)
         next_done = torch.Tensor(next_done).to(device)
 
@@ -197,8 +286,9 @@ for iteration in range(1, num_iterations + 1):
     clipfracs = []
     for epoch in tqdm(range(config['num_sgd_iter'])):
         np.random.shuffle(b_inds)
-        for start in range(0, batch_size):
-            mb_inds = b_inds[start]
+        for start in range(0, batch_size, minibatch_size):
+            end = start + minibatch_size
+            mb_inds = b_inds[start:end]
 
             _, newlogprob, entropy, newvalue = agent.get_action_and_value(b_obs[mb_inds], b_actions[mb_inds])
             logratio = newlogprob - b_logprobs[mb_inds]
