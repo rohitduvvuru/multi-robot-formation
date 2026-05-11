@@ -1,53 +1,30 @@
-# Changes made
+# Changes Log
 
-## Performance improvements
+## 2026-05-10
 
-1. **Automatic teleoperation probability schedule**
-   - Added a teleop curriculum in `code/train_hallway.py` that linearly increases `RandomTeleop.p_grab` from `p_grab` to `p_grab_final` over training iterations.
+Implemented requested training-improvement workflow:
 
-2. **Cluster-conditional formation weighting**
-   - Updated `code/env_hallway.py` formation reward so `k_form` scales by active cluster ratio `k / n_agents`, reducing over-penalization when fewer policy-controlled robots are active.
+- Implemented a uniform default initial n_present distribution in RandomTeleop, so training sees each robot-count regime (1..10) equally by default instead of the prior hand-biased mix. This should improve robustness/generalization across counts without adding rollout or model compute.
 
-3. **Radius curriculum**
-   - Added environment-level radius curriculum fields: `agent_radius_start`, `agent_radius_end`, `agent_radius_curriculum_steps`.
-   - Added runtime progression with `set_curriculum_step()` and `current_agent_radius()`.
-   - Collision and wall constraints now use `current_agent_radius()`.
+- Added an optional --anneal-lr flag to train_hallway.py and implemented lightweight linear learning-rate annealing across iterations. This typically improves late-stage PPO stability at negligible runtime cost.
 
-## CUDA port
+- Expanded default periodic eval coverage from sparse count checkpoints to all regimes 1..10 via --eval-n-present-counts default. This improves checkpoint selection quality with modest evaluation overhead only (not rollout/training-step overhead).
 
-4. **CUDA-first training/eval device selection**
-   - Added `--device` CLI option to `code/train_hallway.py` and `code/eval_hallway.py`.
-   - Default behavior prefers CUDA when available.
-   - Environment now receives selected device through config.
+1. **Comm-range sweep + SGD-epoch sweep runner**
+   - Added `code/scripts/sweep_train.py`.
+   - Script runs two sweep phases:
+     - communication radius sweep (`--comm-ranges`, defaults `2.0,3.0,4.0`) with fixed middle SGD epoch value.
+     - SGD epochs sweep (`--sgd-iters`, defaults `4,6,8`) with fixed middle comm range value.
+   - Each run calls `code/train_hallway.py` with explicit tags and `--anneal-lr`.
+   - Optional `--curriculum-teleop` support propagates to all sweep runs.
 
-## End-to-end training/eval pipeline
+2. **Disturbance curriculum in trainer**
+   - Updated `code/train_hallway.py` with:
+     - `--curriculum-teleop`
+     - `--curriculum-start-scale` (default `0.25`)
+   - When enabled, teleop probabilities `p_grab`, `p_release`, `p_spawn`, `p_delete` are linearly ramped from
+     `curriculum_start_scale * base_prob` at the first iteration to `1.0 * base_prob` by the last iteration.
+   - This keeps early training easier and gradually restores full disturbance difficulty.
 
-5. **Single-command pipeline script**
-   - Added `scripts_run_pipeline.sh`.
-   - Script runs: training -> evaluation -> run comparison.
-   - Prints locations of `config.json`, `iterations.csv`, `episodes.jsonl`, and `eval.json` for immediate inspection.
-
-## Follow-up fixes
-
-6. **Removed deprecated PyG API usage**
-   - Replaced `ModGNNConv(...).jittable()` with `ModGNNConv(...)` in `code/model.py` to eliminate the deprecation warning (`jittable` is now a no-op).
-
-7. **Full-training pipeline defaults + pygame visualization**
-   - Updated `scripts_run_pipeline.sh` defaults to full training settings:
-     - `ITERATIONS=5000`, `NUM_ENVS=16`, `MAX_STEPS=400`.
-   - Added a rendered pygame evaluation stage after headless eval, enabled by default with `VISUALIZE=1`.
-   - Added `VIS_EPISODES` to control rendered episode count (default `1`).
-
-8. **Persist rendered visualization to disk**
-   - Added `--record-dir` to `code/eval_hallway.py` so rendered eval can save each frame as PNG.
-   - Extended `scripts_run_pipeline.sh` with `RECORD_VIS=1` (default) to automatically store rendered frames under `runs/<run_id>/render_frames`.
-
-9. **Reverted frame-recording path and added separate visualization eval**
-   - Removed the `--record-dir` frame-dump behavior from `code/eval_hallway.py`.
-   - Removed automatic frame-recording hooks from `scripts_run_pipeline.sh`.
-   - Added a dedicated pygame visualization script: `code/eval_hallway_viz.py` for post-training rendered evaluation.
-
-10. **Train with up to 3 concurrent teleop robots + goal-reaching bias**
-   - Updated `RandomTeleop` to support multiple concurrent grabs per environment and configured training with `max_grabs_per_env=3`.
-   - Tuned teleop disturbance schedule to be less aggressive at episode start while still ramping (`p_grab: 0.001 -> 0.008`, `p_release: 0.02`).
-   - Tuned reward coefficients in training env config to emphasize reaching goal and sustained forward movement (`k_fwd=7.0`, `k_goal=45.0`) while reducing over-constraint pressure (`k_form=1.2`, `k_wall=0.6`).
+3. **No architecture-size increase**
+   - Changes focus on training schedule/hyperparameter search behavior, not larger model or rollout horizon.

@@ -317,16 +317,24 @@ class FormationHallwayEnv(gym.Env):
         self.ps = next_ps
         self.measured_vs = (self.ps - previous_ps) / cfg["dt"]
 
-        # Forward progress (only credited to active robots)
+        # Forward progress (credited to active robots; later modulated by formation error)
         dy = (self.ps[:, :, Y] - previous_ps[:, :, Y])
         active = 1.0 - self.teleop_mask
-        rewards += coeffs["k_fwd"] * dy * active
+        fwd_reward = coeffs["k_fwd"] * dy * active
 
         # Formation + stall + goal — per env
         formation_errs: List[Optional[float]] = [None] * nE
         stalled_flags = [False] * nE
         for e in range(nE):
             penalty, err = self._formation_reward(e, self.ps[e])
+            # If active robots are far from desired formation, downweight forward reward.
+            if err is not None:
+                beta = float(coeffs.get("fwd_form_beta", 0.0))
+                floor = float(coeffs.get("fwd_scale_min", 0.0))
+                scale = max(floor, float(np.exp(-beta * float(err))))
+            else:
+                scale = 1.0
+            rewards[e] += fwd_reward[e] * scale
             rewards[e] += penalty * active[e]
             formation_errs[e] = err
 
