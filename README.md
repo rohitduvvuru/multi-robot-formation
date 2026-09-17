@@ -1,5 +1,9 @@
 # AFOR — Dynamic-Formation PPO with Teleop-in-the-Loop
 
+Final Demo:
+
+<iframe width="560" height="315" src="https://www.youtube.com/embed/QdPGuu86Pl0?si=32yEa03BEdOAi-Sk" title="YouTube video player" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" referrerpolicy="strict-origin-when-cross-origin" allowfullscreen></iframe>
+
 This repo extends the original [AFOR paper](https://arxiv.org/pdf/2404.01618)
 ("Coordinated Multi-Robot Navigation with Formation Adaptation") with a
 single PPO policy that drives a 4-robot cluster down a long obstacle-free
