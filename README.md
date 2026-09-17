@@ -2,7 +2,13 @@
 
 Final Demo:
 
-[![Watch the video]([https://youtube.com](https://www.youtube.com/watch?v=QdPGuu86Pl0))]([https://youtube.com](https://www.youtube.com/watch?v=QdPGuu86Pl0))
+<p align="center">
+  <a href="https://www.youtube.com/watch?v=QdPGuu86Pl0">
+    <img src="https://youtube.com" alt="Watch the video" width="70%" style="border-radius: 8px;">
+    <br>
+    <sub><b>▶ Watch on YouTube</b></sub>
+  </a>
+</p>
 
 This repo extends the original [AFOR paper](https://arxiv.org/pdf/2404.01618)
 ("Coordinated Multi-Robot Navigation with Formation Adaptation") with a
