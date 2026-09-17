@@ -2,7 +2,7 @@
 
 Final Demo:
 
-<iframe width="560" height="315" src="https://www.youtube.com/embed/QdPGuu86Pl0?si=32yEa03BEdOAi-Sk" title="YouTube video player" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" referrerpolicy="strict-origin-when-cross-origin" allowfullscreen></iframe>
+[![Watch the video]([https://youtube.com](https://www.youtube.com/watch?v=QdPGuu86Pl0))]([https://youtube.com](https://www.youtube.com/watch?v=QdPGuu86Pl0))
 
 This repo extends the original [AFOR paper](https://arxiv.org/pdf/2404.01618)
 ("Coordinated Multi-Robot Navigation with Formation Adaptation") with a
